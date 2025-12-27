@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Simple Chat (MVP)</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 20px auto; }
+    #auth, #chat { border: 1px solid #ddd; padding: 16px; margin-bottom: 16px; }
+    #messages { height: 300px; border:1px solid #eee; overflow:auto; padding:8px; background:#fafafa; }
+    .msg { margin:6px 0; }
+    .meta { color:#888; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1>Simple Chat</h1>
+
+  <div id="auth">
+    <div id="session"></div>
+    <div id="forms">
+      <h3>Sign up</h3>
+      <input id="su_username" placeholder="username"><br>
+      <input id="su_email" placeholder="email (optional)"><br>
+      <input id="su_password" placeholder="password" type="password"><br>
+      <button id="btn_signup">Sign Up</button>
+
+      <h3>Or login</h3>
+      <input id="li_username" placeholder="username"><br>
+      <input id="li_password" placeholder="password" type="password"><br>
+      <button id="btn_login">Login</button>
+      <button id="btn_logout" style="display:none">Logout</button>
+    </div>
+  </div>
+
+  <div id="chat" style="display:none;">
+    <h3>Rooms</h3>
+    <div id="rooms"></div>
+    <h3 id="room-title">Room: general</h3>
+    <div id="messages"></div>
+    <input id="msg_input" placeholder="Type a message..." style="width:80%">
+    <button id="send">Send</button>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    let socket = null;
+    let currentRoom = 1;
+    async function api(path, opts = {}) {
+      const res = await fetch(path, Object.assign({ credentials: "include", headers: { "content-type":"application/json" } }, opts));
+      return res.json();
+    }
+
+    async function refreshSession() {
+      const j = await api("/me");
+      if (j.user) {
+        document.getElementById("session").innerText = "Signed in as: " + j.user.username;
+        document.getElementById("forms").style.display = "none";
+        document.getElementById("btn_logout").style.display = "inline";
+        startChat();
+      } else {
+        document.getElementById("session").innerText = "Not signed in";
+        document.getElementById("forms").style.display = "block";
+        document.getElementById("btn_logout").style.display = "none";
+        stopChat();
+      }
+    }
+
+    document.getElementById("btn_signup").onclick = async () => {
+      const username = document.getElementById("su_username").value;
+      const email = document.getElementById("su_email").value;
+      const password = document.getElementById("su_password").value;
+      const r = await api("/signup", { method: "POST", body: JSON.stringify({ username, email, password }) });
+      if (r.user) refreshSession(); else alert(r.error||"error");
+    };
+
+    document.getElementById("btn_login").onclick = async () => {
+      const username = document.getElementById("li_username").value;
+      const password = document.getElementById("li_password").value;
+      const r = await api("/login", { method: "POST", body: JSON.stringify({ username, password }) });
+      if (r.user) refreshSession(); else alert(r.error||"error");
+    };
+
+    document.getElementById("btn_logout").onclick = async () => {
+      await api("/logout", { method: "POST" });
+      refreshSession();
+    };
+
+    async function startChat() {
+      document.getElementById("chat").style.display = "block";
+      // fetch rooms
+      const rooms = await api("/rooms");
+      const roomsDiv = document.getElementById("rooms");
+      roomsDiv.innerHTML = "";
+      rooms.rooms.forEach(r => {
+        const btn = document.createElement("button");
+        btn.innerText = r.name;
+        btn.onclick = () => joinRoom(r.id, r.name);
+        roomsDiv.appendChild(btn);
+      });
+      connectSocket();
+      loadMessages(currentRoom);
+    }
+
+    function stopChat() {
+      document.getElementById("chat").style.display = "none";
+      if (socket) {
+        socket.disconnect();
+        socket = null;
+      }
+    }
+
+    function connectSocket() {
+      if (socket) return;
+      socket = io({ transports: ["websocket"] });
+      socket.on("connect_error", (err) => {
+        console.error("socket error", err.message);
+      });
+      socket.on("connect", () => {
+        console.log("socket connected");
+        socket.emit("join", currentRoom);
+      });
+      socket.on("message", (m) => {
+        addMessage(m);
+      });
+    }
+
+    function joinRoom(id, name) {
+      if (!socket) return;
+      socket.emit("leave", currentRoom);
+      currentRoom = id;
+      document.getElementById("room-title").innerText = "Room: " + name;
+      socket.emit("join", currentRoom);
+      loadMessages(currentRoom);
+    }
+
+    document.getElementById("send").onclick = () => {
+      const content = document.getElementById("msg_input").value;
+      if (!socket || !content) return;
+      socket.emit("message", { roomId: currentRoom, content }, (res) => {
+        if (res && res.error) alert(res.error);
+      });
+      document.getElementById("msg_input").value = "";
+    };
+
+    async function loadMessages(roomId) {
+      const j = await api("/rooms/" + roomId + "/messages");
+      const el = document.getElementById("messages");
+      el.innerHTML = "";
+      j.messages.forEach(addMessage);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function addMessage(m) {
+      const el = document.getElementById("messages");
+      const div = document.createElement("div");
+      div.className = "msg";
+      div.innerHTML = `<strong>${escapeHtml(m.username)}</strong> <span class="meta">${new Date(m.created_at).toLocaleTimeString()}</span><div>${escapeHtml(m.content)}</div>`;
+      el.appendChild(div);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function escapeHtml(s) {
+      if (!s) return "";
+      return s.replace(/[&<>"']/g, ch => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch]));
+    }
+
+    refreshSession();
+  </script>
+</body>
+</html>
